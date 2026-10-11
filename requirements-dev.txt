@@ -1,0 +1,7 @@
+-r requirements.txt
+
+# tests
+pytest>=8.0
+
+# the web demo (app.py)
+streamlit>=1.35

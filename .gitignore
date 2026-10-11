@@ -1,0 +1,23 @@
+# secrets
+.env
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# benchmark data (1.4 GB - download with scripts/download_bird.py)
+data/
+
+# raw benchmark runs (the summarized results live in results/)
+runs/
+
+# personal notes (interview prep etc.) - not for the public repo
+docs/private/
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

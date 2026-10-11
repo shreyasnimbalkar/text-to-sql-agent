@@ -1,0 +1,10 @@
+[project]
+name = "text-to-sql-agent"
+version = "0.1.0"
+description = "An agent that explores a database, writes SQL, runs it, and fixes its own errors. Evaluated on BIRD."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
