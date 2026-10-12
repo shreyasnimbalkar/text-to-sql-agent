@@ -5,6 +5,7 @@ Models are named "provider:model", for example:
   groq:openai/gpt-oss-120b      Groq cloud (fast, free tier: 8K tokens/minute)
   gemini:gemini-3.5-flash       Google AI Studio free tier
   openrouter:<model>:free       OpenRouter free models
+  nvidia:openai/gpt-oss-120b    NVIDIA Build free API (about 40 requests/minute)
   ollama:qwen2.5-coder:7b       a local model - free, unlimited, data never leaves your laptop
   switchboard:smart             through the Switchboard gateway (my LLM gateway project)
 
@@ -29,6 +30,7 @@ PROVIDERS = {
     "groq": ("https://api.groq.com/openai/v1", "GROQ_API_KEY"),
     "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
     "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+    "nvidia": ("https://integrate.api.nvidia.com/v1", "NVIDIA_API_KEY"),
     "switchboard": ("http://127.0.0.1:8000/v1", "SWITCHBOARD_API_KEY"),
     "ollama": ("http://127.0.0.1:11434", None),
 }
