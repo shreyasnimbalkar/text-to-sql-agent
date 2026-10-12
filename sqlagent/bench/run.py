@@ -12,7 +12,9 @@ daily rate limit), running the same command again skips finished questions.
 from __future__ import annotations
 
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from ..agent import Agent
@@ -22,6 +24,7 @@ from ..schema import describe
 from . import bird
 
 SCORE_TIMEOUT_S = 60  # BIRD's evaluation script also gives each query a time budget
+MAX_FAILURE_STREAK = 5  # this many skipped questions in a row = the provider is down, stop
 
 
 def same_result(pred: QueryResult | None, gold: QueryResult) -> bool:
@@ -53,24 +56,51 @@ def run(
     max_fixes: int = 2,
     use_descriptions: bool = True,
     extra: dict | None = None,
+    workers: int = 1,
 ) -> None:
+    """Answer and score every question.
+
+    With workers > 1, several questions run at once, each worker with its own model
+    client and database connections. A question whose model call times out is
+    recorded as skipped and retried on the next run; a daily limit, a bad key, or
+    MAX_FAILURE_STREAK skips in a row stop the run.
+    """
     out.parent.mkdir(parents=True, exist_ok=True)
     done = _done_ids(out)
     todo = [q for q in questions if q.question_id not in done]
-    print(f"{len(questions)} questions, {len(done & {q.question_id for q in questions})} already done, {len(todo)} to go -> {out}")
+    print(f"{len(questions)} questions, {len(done & {q.question_id for q in questions})} already done, "
+          f"{len(todo)} to go -> {out}", flush=True)
 
-    llm = LLM(model, extra=extra or {})
-    dbs: dict[str, Database] = {}
+    lock = threading.Lock()
+    stop = threading.Event()
+    local = threading.local()
     schemas: dict[str, str] = {}
-    n = n_first = n_final = 0
+    open_dbs: list[Database] = []
+    tally = {"started": 0, "n": 0, "first": 0, "final": 0, "skipped": 0, "streak": 0}
 
-    for i, q in enumerate(todo, 1):
-        if q.db_id not in dbs:
-            dbs[q.db_id] = Database(bird.db_path(q.db_id))
-            descs = bird.load_descriptions(q.db_id) if use_descriptions else None
-            schemas[q.db_id] = describe(dbs[q.db_id], descs)
-        db = dbs[q.db_id]
-        agent = Agent(llm, db, schemas[q.db_id], max_explore=max_explore, max_fixes=max_fixes, self_correct=self_correct)
+    def database(db_id: str) -> Database:
+        if not hasattr(local, "dbs"):
+            local.dbs = {}
+        if db_id not in local.dbs:
+            db = Database(bird.db_path(db_id))
+            with lock:
+                open_dbs.append(db)
+            local.dbs[db_id] = db
+            if db_id not in schemas:
+                descs = bird.load_descriptions(db_id) if use_descriptions else None
+                schemas[db_id] = describe(db, descs)
+        return local.dbs[db_id]
+
+    def work(q: bird.Question) -> None:
+        if stop.is_set():
+            return
+        if not hasattr(local, "llm"):
+            local.llm = LLM(model, extra=extra or {})
+        db = database(q.db_id)
+        agent = Agent(local.llm, db, schemas[q.db_id], max_explore=max_explore, max_fixes=max_fixes,
+                      self_correct=self_correct)
+        with lock:
+            tally["started"] += 1
 
         rec = {"question_id": q.question_id, "db_id": q.db_id, "difficulty": q.difficulty, "model": model,
                "self_correct": self_correct, "question": q.question, "evidence": q.evidence, "gold_sql": q.gold_sql}
@@ -78,9 +108,17 @@ def run(
             res = agent.ask(q.question, q.evidence)
         except LLMError as e:
             rec["llm_error"] = str(e)
-            _append(out, rec)
-            print(f"\nStopped: {e}\nRun the same command again later to resume.")
-            break
+            with lock:
+                _append(out, rec)
+                tally["skipped"] += 1
+                tally["streak"] += 1
+                print(f"skipped q{q.question_id}: {str(e)[:120]}", flush=True)
+                if not e.transient or tally["streak"] >= MAX_FAILURE_STREAK:
+                    if not stop.is_set():
+                        print(f"\nStopped: {e}\nRun the same command again later to resume.", flush=True)
+                    stop.set()
+            return
+
 
         # Score with full results (no row limit), like the official evaluation.
         gold = db.run(q.gold_sql, max_rows=None, timeout_s=SCORE_TIMEOUT_S)
@@ -105,19 +143,27 @@ def run(
             steps=[{"kind": s.kind, "sql": s.sql, "error": s.result.error if s.result else None,
                     "rows": len(s.result.rows) if s.result and s.result.ok else None} for s in res.steps],
         )
-        _append(out, rec)
-
-        n += 1
-        n_first += rec["correct_first"]
-        n_final += rec["correct_final"]
         mark = "OK " if rec["correct_final"] else "-- "
         fixed = " (fixed by self-correction)" if rec["correct_final"] and not rec["correct_first"] else ""
-        print(f"[{i}/{len(todo)}] {mark} q{q.question_id} {q.db_id} {q.difficulty:<11} "
-              f"{res.llm_calls} calls {res.seconds:5.1f}s{fixed}   "
-              f"| this session: {100 * n_final / n:.1f}% (first try {100 * n_first / n:.1f}%)", flush=True)
+        with lock:
+            _append(out, rec)
+            tally["streak"] = 0
+            tally["n"] += 1
+            tally["first"] += rec["correct_first"]
+            tally["final"] += rec["correct_final"]
+            n = tally["n"]
+            print(f"[{n}/{len(todo)}] {mark} q{q.question_id} {q.db_id} {q.difficulty:<11} "
+                  f"{res.llm_calls} calls {res.seconds:5.1f}s{fixed}   "
+                  f"| this session: {100 * tally['final'] / n:.1f}% (first try {100 * tally['first'] / n:.1f}%)",
+                  flush=True)
 
-    for db in dbs.values():
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        list(pool.map(work, todo))
+    for db in open_dbs:
         db.close()
+    if tally["skipped"]:
+        print(f"\n{tally['skipped']} question(s) skipped after model errors. "
+              f"Run the same command again to retry them.", flush=True)
 
 
 def _append(path: Path, rec: dict) -> None:

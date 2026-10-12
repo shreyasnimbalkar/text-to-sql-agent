@@ -64,7 +64,8 @@ def cmd_bench(args) -> int:
         questions = bird.sample(questions, args.limit, seed=args.seed)
     name = args.out or f"runs/{args.model.replace(':', '_').replace('/', '_')}{'_nofix' if args.no_fix else ''}.jsonl"
     run.run(args.model, Path(name), questions, self_correct=not args.no_fix, max_explore=args.max_explore,
-            max_fixes=args.max_fixes, use_descriptions=not args.no_descriptions, extra=_extra(args))
+            max_fixes=args.max_fixes, use_descriptions=not args.no_descriptions, extra=_extra(args),
+            workers=args.workers)
     return 0
 
 
@@ -118,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--seed", type=int, default=0, help="sample seed")
     b.add_argument("--db-id", help="only questions about this database")
     b.add_argument("--out", help="results file (.jsonl); default runs/<model>.jsonl")
+    b.add_argument("--workers", type=int, default=1, help="questions to run at the same time (default 1)")
     b.add_argument("--no-descriptions", action="store_true", help="don't give the model BIRD's column descriptions")
     agent_opts(b)
     b.set_defaults(fn=cmd_bench)

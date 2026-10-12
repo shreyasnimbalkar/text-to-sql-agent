@@ -39,7 +39,15 @@ MAX_WAIT_S = 600  # if a provider says "come back in more than 10 minutes", it's
 
 
 class LLMError(RuntimeError):
-    """The model could not be reached (bad key, daily limit hit, provider down, ...)."""
+    """The model could not be reached (bad key, daily limit hit, provider down, ...).
+
+    `transient` is True when trying the same request again later may work (timeouts,
+    5xx errors that outlasted our retries). A benchmark can skip the question and go on.
+    """
+
+    def __init__(self, message: str, transient: bool = False):
+        super().__init__(message)
+        self.transient = transient
 
 
 @dataclass
@@ -140,7 +148,7 @@ class LLM:
                 continue
 
             detail = "timeout" if r is None else f"HTTP {r.status_code}: {r.text[:300]}"
-            raise LLMError(f"{self.provider} call failed: {detail}")
+            raise LLMError(f"{self.provider} call failed: {detail}", transient=transient)
 
     def _parse(self, data: dict) -> str:
         self.usage.calls += 1
