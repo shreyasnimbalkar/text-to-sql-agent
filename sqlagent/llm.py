@@ -36,6 +36,7 @@ PROVIDERS = {
 }
 
 MAX_WAIT_S = 600  # if a provider says "come back in more than 10 minutes", it's a daily limit: give up
+MAX_RATE_LIMIT_WAIT_S = 600  # total time to keep retrying 429s for one request before skipping it
 
 
 class LLMError(RuntimeError):
@@ -118,11 +119,19 @@ class LLM:
     def _post(self, url: str, payload: dict) -> dict:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         transient_tries = 0
+        rate_limited_tries = 0
+        rate_limited_wait = 0.0
         while True:
             try:
                 r = self._http.post(url, json=payload, headers=headers)
             except httpx.ConnectError as e:
-                raise LLMError(f"cannot reach {self.provider} at {self.base_url} ({e}). Is it running?") from e
+                # A Wi-Fi blip or DNS hiccup: retry like a timeout. Still failing = skip this question.
+                if transient_tries < 4:
+                    time.sleep(2 * 2**transient_tries)
+                    transient_tries += 1
+                    continue
+                raise LLMError(f"cannot reach {self.provider} at {self.base_url} ({e}). Is it running?",
+                               transient=True) from e
             except httpx.TimeoutException:
                 r = None
 
@@ -130,7 +139,12 @@ class LLM:
                 return r.json()
 
             if r is not None and r.status_code == 429:
-                wait = _retry_after(r)
+                # No Retry-After header (NVIDIA): back off 10, 20, 40 ... up to 120 s.
+                wait = _retry_after(r) or min(10.0 * 2**rate_limited_tries, 120.0)
+                rate_limited_tries += 1
+                rate_limited_wait += wait
+                if rate_limited_wait > MAX_RATE_LIMIT_WAIT_S and r.headers.get("retry-after") is None:
+                    raise LLMError(f"{self.provider} kept rate-limiting for {rate_limited_wait:.0f}s", transient=True)
                 if wait > MAX_WAIT_S:
                     raise LLMError(f"{self.provider} rate limit: retry in {wait:.0f}s (daily limit?). {r.text[:200]}")
                 time.sleep(wait)
@@ -163,9 +177,9 @@ class LLM:
         return (choice.get("message") or {}).get("content", "") or ""
 
 
-def _retry_after(r: httpx.Response) -> float:
-    """How long the provider wants us to wait. Groq sends `retry-after` in seconds."""
+def _retry_after(r: httpx.Response) -> float | None:
+    """How long the provider wants us to wait (Groq sends `retry-after` in seconds). None if it doesn't say."""
     try:
         return max(1.0, float(r.headers.get("retry-after", "")))
     except ValueError:
-        return 20.0
+        return None

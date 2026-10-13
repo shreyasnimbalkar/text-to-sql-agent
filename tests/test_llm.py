@@ -40,6 +40,31 @@ def test_waits_on_429_then_succeeds(monkeypatch):
     assert llm.chat([]) == "SELECT 1"
 
 
+def test_429_without_retry_after_backs_off_then_gives_up(monkeypatch):
+    waits = []
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setattr("time.sleep", waits.append)
+    llm = LLM("groq:some-model")
+    llm._http = httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(429)))
+    with pytest.raises(LLMError) as e:
+        llm.chat([])
+    assert e.value.transient  # the benchmark skips the question instead of stopping
+    assert waits[:5] == [10, 20, 40, 80, 120]
+
+
+def test_connection_errors_are_retried(monkeypatch):
+    calls = []
+
+    def handler(req):
+        calls.append(1)
+        if len(calls) < 3:
+            raise httpx.ConnectError("getaddrinfo failed")
+        return ok()
+
+    llm = make_llm(monkeypatch, handler)
+    assert llm.chat([]) == "SELECT 1" and len(calls) == 3
+
+
 def test_daily_limit_gives_up(monkeypatch):
     llm = make_llm(monkeypatch, lambda req: httpx.Response(429, headers={"retry-after": "7200"}))
     with pytest.raises(LLMError, match="daily limit"):
