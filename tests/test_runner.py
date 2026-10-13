@@ -13,7 +13,7 @@ class FakeLLM:
 
     fail: dict[str, LLMError] = {}
 
-    def __init__(self, model, extra=None):
+    def __init__(self, model, extra=None, timeout_s=None):
         self.usage = Usage()
 
     def chat(self, messages):

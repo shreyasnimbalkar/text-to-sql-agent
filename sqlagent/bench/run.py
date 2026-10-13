@@ -57,6 +57,7 @@ def run(
     use_descriptions: bool = True,
     extra: dict | None = None,
     workers: int = 1,
+    timeout_s: float | None = None,
 ) -> None:
     """Answer and score every question.
 
@@ -95,7 +96,7 @@ def run(
         if stop.is_set():
             return
         if not hasattr(local, "llm"):
-            local.llm = LLM(model, extra=extra or {})
+            local.llm = LLM(model, extra=extra or {}, timeout_s=timeout_s)
         db = database(q.db_id)
         agent = Agent(local.llm, db, schemas[q.db_id], max_explore=max_explore, max_fixes=max_fixes,
                       self_correct=self_correct)

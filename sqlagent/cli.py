@@ -29,7 +29,7 @@ def cmd_ask(args) -> int:
     from .schema import describe
 
     db = Database(args.db)
-    llm = LLM(args.model, extra=_extra(args))
+    llm = LLM(args.model, extra=_extra(args), timeout_s=args.timeout)
     # BIRD-style column descriptions, if the database comes with them.
     descriptions = read_description_folder(db.path.parent / "database_description")
     agent = Agent(llm, db, describe(db, descriptions), max_explore=args.max_explore, max_fixes=args.max_fixes,
@@ -65,7 +65,7 @@ def cmd_bench(args) -> int:
     name = args.out or f"runs/{args.model.replace(':', '_').replace('/', '_')}{'_nofix' if args.no_fix else ''}.jsonl"
     run.run(args.model, Path(name), questions, self_correct=not args.no_fix, max_explore=args.max_explore,
             max_fixes=args.max_fixes, use_descriptions=not args.no_descriptions, extra=_extra(args),
-            workers=args.workers)
+            workers=args.workers, timeout_s=args.timeout)
     return 0
 
 
@@ -99,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
 
     def agent_opts(sp):
         sp.add_argument("--model", default=DEFAULT_MODEL, help=f"provider:model (default {DEFAULT_MODEL})")
+        sp.add_argument("--timeout", type=float, help="seconds to wait for each model reply (default 60, Ollama 300)")
         sp.add_argument("--reasoning", choices=["low", "medium", "high"], default="low",
                         help="reasoning effort for reasoning models like gpt-oss (default low)")
         sp.add_argument("--max-explore", type=int, default=3, help="max exploration queries per question")
