@@ -19,6 +19,22 @@ def test_execution_accuracy_rules():
     assert not same_result(None, gold)
 
 
+def test_failure_breakdown(monkeypatch, db_path):
+    monkeypatch.setattr(bird, "db_path", lambda db_id: db_path)
+    gold = "SELECT name FROM customers WHERE \"Home Country\" = 'Spain'"
+    cases = {
+        "SELECT nope FROM customers": "query fails (SQL error or timeout)",
+        "SELECT name FROM customers WHERE id = 99": "query returns no data",
+        "SELECT name, id FROM customers WHERE \"Home Country\" = 'Spain'": "wrong columns (extra, missing or merged)",
+        "SELECT name FROM customers WHERE id = 1": "too many or too few rows (DISTINCT, LIMIT, ties)",
+        "SELECT name FROM customers WHERE \"Home Country\" = 'France'": "wrong values (filter, join or calculation)",
+    }
+    recs = [{"correct_final": False, "db_id": "shop", "gold_sql": gold, "final_sql": sql} for sql in cases]
+    recs.append({"correct_final": False, "db_id": "shop", "gold_sql": "SELECT 1.0 / 3", "final_sql": "SELECT 0.333333"})
+    got = report.failure_breakdown(recs)
+    assert got == {**{why: 1 for why in cases.values()}, "same numbers, different rounding": 1}
+
+
 def test_stratified_sample_keeps_difficulty_mix():
     qs = [bird.Question(i, "db", "q", "", "SELECT 1", d)
           for i, d in enumerate(["simple"] * 30 + ["moderate"] * 50 + ["challenging"] * 20)]

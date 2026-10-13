@@ -71,7 +71,44 @@ def summarize(recs: list[dict]) -> dict:
     return s
 
 
-def render(paths: list[Path]) -> str:
+def _rounded(rows: list[tuple], digits: int = 2) -> set[tuple]:
+    return {tuple(round(v, digits) if isinstance(v, float) else v for v in row) for row in rows}
+
+
+def failure_breakdown(recs: list[dict]) -> dict[str, int]:
+    """Why the final answers were wrong. Re-runs the predicted and gold SQL, so it needs data/bird/."""
+    from ..db import Database
+    from . import bird
+
+    reasons: dict[str, int] = {}
+    dbs: dict[str, Database] = {}
+    for r in recs:
+        if r["correct_final"]:
+            continue
+        db = dbs.setdefault(r["db_id"], Database(bird.db_path(r["db_id"])))
+        gold = db.run(r["gold_sql"], max_rows=None, timeout_s=60)
+        pred = db.run(r["final_sql"], max_rows=None, timeout_s=60) if r["final_sql"] else None
+        if pred is None or not pred.ok:
+            why = "query fails (SQL error or timeout)"
+        elif not gold.ok or gold.is_empty:
+            why = "gold answer is empty or fails (benchmark label problem)"
+        elif pred.is_empty:
+            why = "query returns no data"
+        elif len(pred.columns) != len(gold.columns):
+            why = "wrong columns (extra, missing or merged)"
+        elif _rounded(pred.rows) == _rounded(gold.rows):
+            why = "same numbers, different rounding"
+        elif set(pred.rows) < set(gold.rows) or set(pred.rows) > set(gold.rows):
+            why = "too many or too few rows (DISTINCT, LIMIT, ties)"
+        else:
+            why = "wrong values (filter, join or calculation)"
+        reasons[why] = reasons.get(why, 0) + 1
+    for db in dbs.values():
+        db.close()
+    return dict(sorted(reasons.items(), key=lambda kv: -kv[1]))
+
+
+def render(paths: list[Path], why: bool = False) -> str:
     out = []
     for p in paths:
         recs = load(p)
@@ -101,4 +138,12 @@ def render(paths: list[Path]) -> str:
         out.append(f"- Cost per question: {s['avg_calls']:.2f} LLM calls, {s['avg_tokens']:,.0f} tokens, "
                    f"{s['avg_seconds']:.1f}s on average.")
         out.append("")
+        if why:
+            wrong = s["n"] - round(s["ex_final"] * s["n"])
+            out.append(f"Why the {wrong} wrong answers were wrong:\n")
+            out.append("| Reason | Questions |")
+            out.append("|---|---|")
+            for reason, k in failure_breakdown(recs).items():
+                out.append(f"| {reason} | {k} |")
+            out.append("")
     return "\n".join(out)

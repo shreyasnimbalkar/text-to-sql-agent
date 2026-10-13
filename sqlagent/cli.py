@@ -72,7 +72,7 @@ def cmd_bench(args) -> int:
 def cmd_report(args) -> int:
     from .bench import report
 
-    text = report.render([Path(p) for p in args.files])
+    text = report.render([Path(p) for p in args.files], why=args.why)
     print(text)
     if args.save:
         Path(args.save).parent.mkdir(parents=True, exist_ok=True)
@@ -128,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("report", help="summarize benchmark result files")
     r.add_argument("files", nargs="+")
     r.add_argument("--save", help="also write the report to this Markdown file")
+    r.add_argument("--why", action="store_true", help="also break down why wrong answers were wrong (needs data/bird)")
     r.set_defaults(fn=cmd_report)
 
     g = sub.add_parser("gold-check", help="check that BIRD's gold SQL runs on the local databases")
