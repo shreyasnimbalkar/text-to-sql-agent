@@ -12,19 +12,46 @@ databases (schools, Formula 1, banking, card games, ...).
 
 ## Results
 
-The full run on BIRD Mini-Dev (500 questions, SQLite) with `gpt-oss-120b` on Groq is in
-progress. The free tier allows 8,000 tokens a minute, so it takes a while.
-
-Development numbers so far, on 30 held-out BIRD dev questions that are not part of the
-test set (too few to quote as a result, the 95% interval is about ±15 points):
+BIRD Mini-Dev, SQLite version: all 500 questions over 11 databases, scored with BIRD's
+execution accuracy (the query must return the same rows as the reference query). The
+model is Kimi K3 through NVIDIA's free API, temperature 0, with BIRD's hints.
 
 | | Execution accuracy |
 |---|---|
-| First answer (no self-correction) | 73.3% |
-| Final answer (with self-correction) | 76.7% |
+| First answer (self-correction off) | 66.6% |
+| Final answer (self-correction on) | **68.2%** (95% CI 64.0 to 72.4) |
+| Gain from self-correction | **+1.6 points** (95% CI +0.6 to +2.8) |
 
-A 10-question check with a local `qwen2.5-coder:7b` went from 40% to 50% with
-self-correction. Smaller models make more mistakes the database can catch.
+| Difficulty | Questions | First answer | Final answer |
+|---|---|---|---|
+| simple | 148 | 79.1% | 79.7% |
+| moderate | 250 | 64.0% | 66.4% |
+| challenging | 102 | 54.9% | 55.9% |
+
+Self-correction kicked in on 17 questions. It turned 8 wrong answers into right ones and
+never turned a right answer wrong. Queries that crashed went from 2 to 0. The first
+answer and the final answer come from the same run, so the comparison is paired.
+
+A second model, GLM-5.3, got 68.9% with a +3.5 point gain (16 fixed, 0 broken), but only
+on 454 of the 500 questions because NVIDIA throttled it before the run finished. Details
+in [results/](results/).
+
+What the remaining mistakes look like (159 wrong answers):
+
+| Reason | Questions |
+|---|---|
+| Wrong values: a filter, join or calculation is off | 104 |
+| Wrong columns: extra, missing, or two glued together | 34 |
+| Too many or too few rows (DISTINCT, LIMIT, ties) | 15 |
+| Same numbers, different rounding | 4 |
+| Other (empty gold answer, empty prediction) | 2 |
+
+Almost all of them are queries that run fine and return plausible data, which is the
+kind of mistake execution feedback can't see. That is also why the gain from
+self-correction is small with a strong model: it rarely writes a query that fails.
+
+Prompts were tuned on 1,037 BIRD dev questions that are not in Mini-Dev, never on the
+test questions. An average question took 1.12 model calls and about 4,000 tokens.
 
 ## How it works
 
@@ -46,7 +73,7 @@ question ─► schema + example values ─► model ─┬─ EXPLORE query ─
   spelled) and gets up to 2 rounds of fixes.
 - Queries run on a read-only connection with a 30 second timeout. Only `SELECT`/`WITH`
   is accepted.
-- It works with Groq, Gemini, OpenRouter, a local Ollama model, or through my
+- It works with NVIDIA's free API, Groq, Gemini, OpenRouter, a local Ollama model, or through my
   [Switchboard](https://github.com/shreyasnimbalkar/switchboard-llm-gateway) gateway.
 
 [DESIGN.md](DESIGN.md) covers the loop, the evaluation setup and the trade-offs.
@@ -58,7 +85,7 @@ git clone https://github.com/shreyasnimbalkar/text-to-sql-agent.git
 cd text-to-sql-agent
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements-dev.txt
-copy .env.example .env                       # add a Groq or Gemini key, or use Ollama
+copy .env.example .env                       # add an NVIDIA, Groq or Gemini key, or use Ollama
 .venv\Scripts\python scripts\download_bird.py  # BIRD databases, ~350 MB download
 ```
 
@@ -82,13 +109,22 @@ Pick one of the BIRD databases or upload your own `.sqlite` file.
 ## Running the benchmark
 
 ```powershell
-.venv\Scripts\python -m sqlagent bench --model groq:openai/gpt-oss-120b
-.venv\Scripts\python -m sqlagent report runs\groq_openai_gpt-oss-120b.jsonl
+.venv\Scripts\python -m sqlagent bench --model nvidia:moonshotai/kimi-k3 --workers 4 --timeout 180
+.venv\Scripts\python -m sqlagent report runs
+vidia_moonshotai_kimi-k3.jsonl --why
 ```
 
 Results are appended to a JSONL file one question at a time, so a run that hits a
 daily rate limit can be restarted with the same command and picks up where it stopped.
-`--limit N` evaluates a stratified sample, `--no-fix` turns self-correction off.
+`--limit N` evaluates a stratified sample, `--no-fix` turns self-correction off, and
+`--why` adds the breakdown of wrong answers.
+
+Free tiers made this the slowest part of the project. Groq allows 200,000 tokens a day
+for gpt-oss-120b, about 50 questions. NVIDIA has no daily cap but throttles a model for
+a long time if you go over about 40 requests a minute, and its response times swung
+between 5 and 120 seconds. Hence the parallel workers, the per-request timeout, and a
+runner that skips a question after repeated 429s or timeouts and retries it on the next
+run instead of stopping.
 
 ## Tests
 
@@ -107,12 +143,13 @@ sqlagent/
   agent.py       the explore / answer / fix loop
   db.py          read-only SQLite access with timeouts
   schema.py      schema + example values as commented CREATE TABLEs
-  llm.py         chat client for Groq, Gemini, OpenRouter, Ollama, Switchboard
+  llm.py         chat client for NVIDIA, Groq, Gemini, OpenRouter, Ollama, Switchboard
   prompts.py     every prompt in one place
   cli.py         ask / bench / report / gold-check
   bench/         BIRD loading, scoring and the results report
 app.py           Streamlit web app
 scripts/         download_bird.py
+results/         benchmark reports
 tests/
 ```
 

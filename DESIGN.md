@@ -45,7 +45,35 @@ full results (no row limit) and a 60 s timeout per query.
   were checked on this set so the test questions are not used for tuning.
 - BIRD's hint ("evidence") is passed to the model, as in the standard BIRD setting.
 - The report gives 95% bootstrap confidence intervals, and counts how many answers
-  self-correction fixed (wrong to right) and broke (right to wrong).
+  self-correction fixed (wrong to right) and broke (right to wrong). `--why` re-runs
+  the wrong answers and sorts them by what went wrong.
+
+### Choosing the model
+
+On the 30-question tuning sample, gpt-oss-120b (Groq), Kimi K3 and GLM-5.3 (both on
+NVIDIA) scored 76.7%, 73.3% and 73.3%. With 30 questions that gap is one question, so
+they are effectively tied. The choice came down to quota: Groq's free tier allows
+200,000 tokens a day for gpt-oss-120b, which is about 50 questions, so the full run
+used Kimi K3 on NVIDIA. GLM-5.3 got through 454 questions before NVIDIA throttled it.
+
+| Model | Questions | First answer | Final answer | Fixed / broken |
+|---|---|---|---|---|
+| Kimi K3 | 500 | 66.6% | 68.2% | 8 / 0 |
+| GLM-5.3 | 454 | 65.4% | 68.9% | 16 / 0 |
+
+Self-correction never turned a right answer wrong in either run. Its gain depends on
+how often the model writes a query that fails or returns nothing, and both models
+rarely do.
+
+### Running on free tiers
+
+The Kimi run took several restarts over two days. The runner is built for that:
+results are appended one question at a time, a rerun skips finished questions, and a
+question whose model call times out or keeps getting 429s is recorded as skipped and
+retried on the next run. Only a daily limit, a bad key, or five failures in a row stop
+the run. NVIDIA sends 429s without a Retry-After header, so the client backs off
+10, 20, 40, ... up to 120 s and gives up on that request after 10 minutes. The first
+version retried every 20 s forever, and the run looked frozen.
 
 ## Decisions
 
@@ -76,7 +104,10 @@ answers. I did not add it.
 - BIRD's gold SQL has errors. In a 20-question sample, 2 gold answers were wrong
   (one filters on a price that does not match the question). Every system is scored
   against the same labels, but the ceiling is below 100%.
-- Execution feedback cannot catch a query that runs, returns rows, and is still wrong
-  (wrong join, extra column). Those are most of the remaining errors.
+- Execution feedback cannot catch a query that runs, returns rows, and is still wrong.
+  In the Kimi run, 157 of the 159 wrong answers ran and returned data: 104 had a wrong
+  filter, join or calculation, 34 the wrong columns, 15 too many or too few rows, and 4
+  differed only in rounding. Catching these needs a different signal, such as sampling
+  several queries and comparing their results.
 - The schema is sent whole. A database with hundreds of tables would need a retrieval
   step that picks the relevant tables first.
